@@ -345,6 +345,9 @@ def health_check():
         results["redis"] = "OK"
     except Exception as e:
         results["redis"] = f"FAIL: {e}"
+        # Names (and value lengths) only, never values, to spot typos or empty values
+        results["redis_env_seen"] = {repr(k): len(v) for k, v in os.environ.items()
+                                     if "REDIS" in k.upper() or k.upper().startswith("KV")}
 
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     try:
