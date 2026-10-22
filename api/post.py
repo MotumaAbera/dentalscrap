@@ -34,6 +34,10 @@ FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.6"))  # otherwise: chance o
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
 FOOTER = os.environ.get("FOOTER", "Dr. Debela D.")
 TIME_BUDGET = 50  # seconds; stay under Vercel's 60s function limit
+REPEAT_DAYS = int(os.environ.get("REPEAT_DAYS", "60"))  # same tip / tip bank tip not again before this
+TOPIC_COOLDOWN_DAYS = 14  # same topic not again before this (when enough other topics are left)
+MAX_TIMES = 2             # a tip is posted at most twice: the original + one repost
+SIMILARITY = 0.45         # word overlap above this counts as a repeat of a recent post
 
 FEEDS = [
     "https://news.google.com/rss/search?q=dental+health&hl=en-US&gl=US&ceid=US:en",
@@ -111,7 +115,8 @@ Safety rules (very important, posts are published without human review):
 - NEVER diagnose, and never suggest home treatment for pain, swelling, bleeding or infection: say to see a dentist.
 - Do not state numbers, statistics or study results unless they appear in the source text.
 - Do not copy sentences from the source; write an original practical tip.
-- Each language version: 2 to 4 short sentences, under 350 characters, warm and simple. One emoji at the start is fine.
+- Each language version: 4 to 6 short sentences, about 500 to 700 characters, warm and simple.
+  Explain why it matters, then what to do; add when to see a dentist only where it fits. One emoji at the start is fine.
 
 Language rules:
 - "om": natural everyday Afaan Oromoo in Qubee (Latin script).
@@ -179,7 +184,7 @@ def parse_json(text):
 
 
 def write_tip(source_text):
-    data = parse_json(ask_claude(WRITER_SYSTEM, source_text))
+    data = parse_json(ask_claude(WRITER_SYSTEM, source_text, max_tokens=4000))
     if data.get("skip") or not all(str(data.get(k, "")).strip() for k in ("en", "om", "am")):
         return None
     return data
@@ -210,6 +215,48 @@ def passes_check(tip, log):
         log.append("rejected by safety check: " + str(result.get("reason")))
         return False
     return True
+
+
+# ---------------- Repeat control ----------------
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def days_since(iso):
+    return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 86400
+
+
+def load_posts(r):
+    """Original AI posts, newest first, with how often and when each was last shown (reposts included)."""
+    meta = r.hgetall("repost_log") or {}
+    out = []
+    for raw in (r.lrange("posts", 0, 499) or []):
+        try:
+            p = json.loads(raw)
+            m = json.loads(meta[p["ts"]]) if p["ts"] in meta else {}
+        except Exception:
+            continue
+        p["count"], p["last"] = m.get("count", 1), m.get("last", p["ts"])
+        out.append(p)
+    return out
+
+
+def words(text):
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 3}
+
+
+def too_similar(tip, posts, log):
+    new = words(tip["en"])
+    for p in posts:
+        old = words(p["en"])
+        if days_since(p["last"]) < REPEAT_DAYS and new and old and len(new & old) / len(new | old) > SIMILARITY:
+            log.append("rejected: too similar to a recent post")
+            return True
+    return False
+
+
+def accept(tip, posts, log):
+    return not too_similar(tip, posts, log) and passes_check(tip, log)
 
 
 # ---------------- News ----------------
@@ -243,14 +290,14 @@ def fresh_news(r, log):
     return [i for i in items[:30] if not r.sismember("seen_news", i["link"])]
 
 
-def tip_from_news(r, start, log):
+def tip_from_news(r, posts, start, log):
     for item in fresh_news(r, log)[:3]:
         if time.time() - start > 25:  # leave time for the tip bank fallback
             break
         r.sadd("seen_news", item["link"])
         try:
             tip = write_tip(f"News headline: {item['title']}\n\nNews summary: {item['summary'][:2000]}")
-            if tip and passes_check(tip, log):
+            if tip and accept(tip, posts, log):
                 tip["source"] = item["link"]
                 return tip
             log.append("news item skipped: " + item["title"][:80])
@@ -260,21 +307,20 @@ def tip_from_news(r, start, log):
 
 
 # ---------------- Tip bank ----------------
-def tip_from_bank(r, start, log):
-    used = set(r.smembers("used_tips") or [])
-    unused = [t for t in TIPS if t[0] not in used]
-    if not unused:
-        r.delete("used_tips")
-        unused = list(TIPS)
-    random.shuffle(unused)
-    for tip_id, text in unused[:3]:
+def tip_from_bank(r, posts, start, log):
+    last = r.hgetall("tip_last") or {}
+    ready = [t for t in TIPS if t[0] not in last or days_since(last[t[0]]) >= REPEAT_DAYS]
+    if not ready:
+        log.append(f"tip bank: every tip was used in the last {REPEAT_DAYS} days")
+        return None
+    random.shuffle(ready)
+    for tip_id, text in ready[:3]:
         if time.time() - start > TIME_BUDGET - 15:
             break
         try:
             tip = write_tip("Evergreen dental tip approved by the dentist. Keep the meaning exactly, "
-                            f"rewrite it warmly and translate it:\n\n{text}")
-            if tip and passes_check(tip, log):
-                r.sadd("used_tips", tip_id)
+                            f"expand it warmly and translate it:\n\n{text}")
+            if tip and accept(tip, posts, log):
                 tip["source"] = "tip-bank:" + tip_id
                 return tip
         except Exception as e:
@@ -282,28 +328,21 @@ def tip_from_bank(r, start, log):
     return None
 
 
-def recent_posts(r, n=24):
-    out = []
-    for raw in (r.lrange("posts", 0, n - 1) or []):
-        try:
-            out.append(json.loads(raw)["en"])
-        except Exception:
-            pass
-    return out
-
-
-def tip_from_topic(r, start, log):
-    recent = recent_posts(r)
-    avoid = "\n".join("- " + t for t in recent) or "(none yet)"
-    for topic in random.sample(TOPICS, 3):
+def tip_from_topic(r, posts, start, log):
+    avoid = "\n".join("- " + p["en"][:150] for p in posts[:60]) or "(none yet)"
+    last = r.hgetall("topic_last") or {}
+    ready = [t for t in TOPICS if t not in last or days_since(last[t]) >= TOPIC_COOLDOWN_DAYS]
+    if len(ready) < 3:  # most topics used lately: take the ones unused for longest
+        ready = sorted(TOPICS, key=lambda t: last.get(t, ""))[:6]
+    for topic in random.sample(ready, 3):
         if time.time() - start > TIME_BUDGET - 15:
             break
         try:
             tip = write_tip(
                 f"Write a NEW practical tip about this topic: {topic}.\n\n"
-                f"It must be clearly different from these recently posted tips:\n{avoid}"
+                f"It must be clearly different from these earlier tips:\n{avoid}"
             )
-            if tip and passes_check(tip, log):
+            if tip and accept(tip, posts, log):
                 tip["source"] = "topic:" + topic
                 return tip
         except Exception as e:
@@ -312,27 +351,28 @@ def tip_from_topic(r, start, log):
 
 
 # ---------------- Fallback (no AI needed, e.g. OpenRouter out of credits) ----------------
-def tip_from_archive(r, log):
-    """Repost an earlier AI tip that already passed the safety check, skipping the most recent ones."""
-    posts = r.lrange("posts", 0, 499) or []
-    older = posts[24:] or posts[1:] or posts
-    reposted = set(r.smembers("reposted") or [])
-    choices = [p for p in older if json.loads(p)["ts"] not in reposted]
-    if not choices and older:
-        r.delete("reposted")
-        choices = older
-    if not choices:
-        return None
-    post = json.loads(random.choice(choices))
-    r.sadd("reposted", post["ts"])
-    log.append("AI unavailable: reposting an earlier tip")
-    return {"en": post["en"], "om": post["om"], "am": post["am"], "source": "archive:" + post["ts"]}
+def tip_from_archive(posts, log):
+    """Repost an earlier AI tip that already passed the safety check.
+    Prefer tips shown fewer than MAX_TIMES and not in the last REPEAT_DAYS; otherwise the one shown longest ago."""
+    ready = [p for p in posts if p["count"] < MAX_TIMES and days_since(p["last"]) >= REPEAT_DAYS]
+    if ready:
+        post = random.choice(ready)
+        log.append("AI unavailable: reposting an earlier tip")
+    else:
+        older = [p for p in posts if days_since(p["last"]) >= 3]  # never one shown in the last 3 days
+        if not older:
+            return None
+        post = min(older, key=lambda p: (p["count"], p["last"]))
+        log.append(f"AI unavailable and no tip past {REPEAT_DAYS} days: reposting the oldest one")
+    return {"en": post["en"], "om": post["om"], "am": post["am"], "source": "archive:" + post["ts"],
+            "count": post["count"]}
 
 
-def tip_from_bank_english(log):
-    """Last resort: a dentist-approved tip bank tip, English only."""
-    tip_id, text = random.choice(TIPS)
-    log.append("AI unavailable and no earlier posts: posting an English tip bank tip")
+def tip_from_bank_english(r, log):
+    """Last resort: the dentist-approved tip bank tip used longest ago, English only."""
+    last = r.hgetall("tip_last") or {}
+    tip_id, text = min(TIPS, key=lambda t: last.get(t[0], ""))
+    log.append("AI unavailable and no earlier post old enough to repost: posting an English tip bank tip")
     return {"en": text, "source": "tip-bank-en:" + tip_id}
 
 
@@ -362,29 +402,43 @@ def send_telegram(text):
 
 
 # ---------------- Main job ----------------
+def remember(r, tip):
+    """Record a sent post so repeat control knows what was shown and when."""
+    ts, source = now_iso(), tip["source"]
+    if source.startswith("archive:"):  # reposts aren't stored again, only counted
+        r.hset("repost_log", source[len("archive:"):], json.dumps({"count": tip["count"] + 1, "last": ts}))
+        return
+    if source.startswith("tip-bank"):
+        r.hset("tip_last", source.split(":", 1)[1], ts)
+    if source.startswith("tip-bank-en:"):  # English-only last resort: not kept for reposting
+        return
+    if source.startswith("topic:"):
+        r.hset("topic_last", source[len("topic:"):], ts)
+    r.lpush("posts", json.dumps({"ts": ts, "source": source, "en": tip["en"], "om": tip["om"], "am": tip["am"]},
+                                ensure_ascii=False))
+    r.ltrim("posts", 0, 499)
+
+
 def run_once(dry_run=False):
     start, log = time.time(), []
     r = get_redis()
+    posts = load_posts(r)
     tip = None
     if random.random() < NEWS_RATIO:
-        tip = tip_from_news(r, start, log)
+        tip = tip_from_news(r, posts, start, log)
     if not tip:
         order = [tip_from_topic, tip_from_bank] if random.random() < FRESH_RATIO else [tip_from_bank, tip_from_topic]
         for source_fn in order:
-            tip = source_fn(r, start, log)
+            tip = source_fn(r, posts, start, log)
             if tip:
                 break
-    fallback = not tip
-    if fallback:
-        tip = tip_from_archive(r, log) or tip_from_bank_english(log)
+    if not tip:
+        tip = tip_from_archive(posts, log) or tip_from_bank_english(r, log)
     message = format_message(tip)
     if dry_run:
         return {"posted": False, "dry_run": True, "message": message, "source": tip["source"], "log": log}
     send_telegram(message)
-    if not fallback:  # only new AI tips go in the archive, so reposts don't pile up
-        r.lpush("posts", json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "source": tip["source"],
-                                     "en": tip["en"], "om": tip["om"], "am": tip["am"]}, ensure_ascii=False))
-        r.ltrim("posts", 0, 499)
+    remember(r, tip)
     return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
 
 
