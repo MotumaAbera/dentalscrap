@@ -30,41 +30,98 @@ MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 MODELS = [m.strip() for m in MODEL.split(",") if m.strip()]
 LAST_MODEL = None
 DEADLINE = None  # set per run; AI calls must finish before it
-NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.3"))   # chance to try news first
-FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.6"))  # otherwise: chance of a brand-new topic tip vs tip bank
+NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.45"))  # chance to try research news first
+FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.9"))  # otherwise: chance of a new topic post vs basic tip bank
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
 FOOTER = os.environ.get("FOOTER", "Dr. Debela D.")
 TIME_BUDGET = 100  # seconds; stay under the 120s maxDuration in vercel.json
 REPEAT_DAYS = int(os.environ.get("REPEAT_DAYS", "60"))  # same tip / tip bank tip not again before this
-TOPIC_COOLDOWN_DAYS = 14  # same topic not again before this (when enough other topics are left)
+TOPIC_COOLDOWN_DAYS = 60  # same topic not again before this (when enough other topics are left)
+CATEGORY_GAP = 4          # the next post avoids the subject areas of the last 4 posts
 MAX_TIMES = 2             # a tip is posted at most twice: the original + one repost
-SIMILARITY = 0.45         # word overlap above this counts as a repeat of a recent post
+SIMILARITY = 0.3          # word overlap above this counts as a repeat of a recent post
 
 FEEDS = [
-    "https://news.google.com/rss/search?q=dental+health&hl=en-US&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=oral+health+tips&hl=en-US&gl=US&ceid=US:en",
-    "https://news.google.com/rss/search?q=tooth+decay+prevention&hl=en-US&gl=US&ceid=US:en",
     "https://www.sciencedaily.com/rss/health_medicine/dentistry.xml",
+    "https://news.google.com/rss/search?q=dental+research+study&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=oral+health+study+researchers&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=periodontitis+OR+%22gum+disease%22+study&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=dentistry+new+technology+OR+innovation&hl=en-US&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=oral+microbiome+research&hl=en-US&gl=US&ceid=US:en",
 ]
 KEYWORDS = ["dental", "dentist", "teeth", "tooth", "oral", "gum", "cavity", "cavities",
             "floss", "fluoride", "enamel", "plaque", "mouth"]
 MAX_NEWS_AGE_DAYS = 10
 
-# Topics for brand-new tips (keeps hourly posts varied)
-TOPICS = [
-    "correct brushing technique", "how long to brush", "choosing a toothbrush", "fluoride toothpaste",
-    "flossing or cleaning between teeth", "cleaning the tongue", "bad breath causes and prevention",
-    "sugar and snacking habits", "sweet drinks, soda and juice", "drinking water for teeth",
-    "healthy foods for strong teeth", "sticky sweets and candy", "tea and coffee stains",
-    "baby's first teeth", "baby bottles at bedtime", "helping children brush", "children's first dental visit",
-    "teething babies", "protecting teenagers' teeth", "teeth during pregnancy", "oral health for older people",
-    "caring for dentures", "dental check-ups", "bleeding gums", "gum disease warning signs",
-    "toothache means see a dentist", "sensitive teeth", "smoking and oral health", "khat chewing and teeth",
-    "dry mouth", "mouth sores that don't heal", "diabetes and gum health", "sports and protecting teeth",
-    "not using teeth as tools", "teeth grinding", "traditional chewing sticks (mefakia)",
-    "keeping toothbrushes clean", "brushing at night before sleep", "school children and oral health",
-    "myths about teeth", "a knocked-out tooth is an emergency", "braces and crooked teeth",
-]
+# Topics for new posts, grouped by subject area. Consecutive posts come from different areas,
+# and a topic is not reused for TOPIC_COOLDOWN_DAYS. Add topics freely.
+TOPIC_AREAS = {
+    "mouth-body connection": [
+        "gum disease and heart disease: what the link means", "gum disease and diabetes: a two-way relationship",
+        "oral health and pregnancy outcomes", "oral bacteria and pneumonia in older adults",
+        "periodontitis and inflammation in the whole body", "oral health and brain health research",
+        "the mouth as an early warning sign of other diseases",
+    ],
+    "oral microbiome": [
+        "the oral microbiome: friendly and harmful bacteria", "how plaque biofilm forms and why it is hard to remove",
+        "how sugar feeds acid-producing bacteria", "saliva: the mouth's natural defence system",
+        "probiotics and oral health: what research says so far", "why mouthwash is not a substitute for brushing",
+    ],
+    "how teeth work": [
+        "enamel: the hardest substance in the body and why it cannot regrow",
+        "demineralisation and remineralisation: the daily battle on your teeth",
+        "dentin and why exposed roots become sensitive", "how a cavity develops step by step",
+        "how fluoride works at the chemical level", "wisdom teeth: why many people have problems with them",
+    ],
+    "gum health": [
+        "gingivitis vs periodontitis: the difference", "receding gums: causes and prevention",
+        "bone loss around teeth: the silent process", "why bleeding gums are never normal",
+        "smoking hides the signs of gum disease",
+    ],
+    "nutrition science": [
+        "acid erosion from soft drinks, juices and sports drinks", "calcium, vitamin D and strong teeth",
+        "hidden sugars in everyday foods", "snacking frequency and the acid clock in your mouth",
+        "vitamin C and gum health", "Ethiopian foods and drinks and their effects on teeth",
+    ],
+    "lifestyle risks": [
+        "khat chewing: effects on gums, teeth and the mouth", "tobacco and oral cancer risk",
+        "alcohol and oral health", "stress, teeth grinding and jaw pain", "sleep, snoring and dry mouth",
+        "energy drinks and tooth erosion",
+    ],
+    "oral cancer and serious signs": [
+        "oral cancer: early warning signs adults should know", "HPV and throat and mouth cancers",
+        "white and red patches in the mouth", "why a mouth ulcer lasting over two weeks needs checking",
+    ],
+    "modern dental treatments": [
+        "dental implants: how they fuse with bone", "root canal treatment: myths vs reality",
+        "how modern fillings are made", "crowns and bridges explained", "teeth whitening: safe vs harmful methods",
+        "digital X-rays and 3D scans in dentistry", "lasers in modern dentistry",
+    ],
+    "dental research and future": [
+        "research on regrowing tooth enamel", "stem cells from teeth in medical research",
+        "vaccines against tooth decay: where research stands", "artificial intelligence in dental diagnosis",
+        "saliva tests that may detect diseases", "3D printing in dentistry",
+    ],
+    "jaw, bite and alignment": [
+        "jaw joint (TMJ) problems explained", "crooked teeth and bite problems in adults",
+        "braces and clear aligners: how teeth move through bone", "mouth breathing and its effects",
+    ],
+    "life stages": [
+        "oral health changes after age 50", "menopause and oral health", "tooth loss and nutrition in older adults",
+        "teenagers: sugary drinks, sports and oral health", "why baby teeth matter for adult teeth",
+    ],
+    "myths and facts": [
+        "myth: brushing harder cleans better", "myth: no pain means no dental problem",
+        "myth: tooth loss is a normal part of ageing", "myth: sugar-free means safe for teeth",
+        "charcoal toothpaste: what the evidence says", "traditional chewing sticks (mefakia): evidence and limits",
+    ],
+    "oral hygiene science": [
+        "why two minutes of brushing matters", "electric vs manual toothbrushes: what studies show",
+        "cleaning between teeth: floss, brushes and what works best", "the tongue and bad breath bacteria",
+        "how often to replace a toothbrush and why",
+    ],
+}
+TOPICS = [(area, t) for area, topics in TOPIC_AREAS.items() for t in topics]
 
 # Evergreen tip bank (id, text). Add more freely; ids must be unique.
 TIPS = [
@@ -106,26 +163,32 @@ def get_redis():
 
 
 # ---------------- Claude ----------------
-WRITER_SYSTEM = """You write short dental health tips for a public Telegram community group run by a dentist in Ethiopia.
-Readers are ordinary people of all ages. Each tip is posted in English, Afaan Oromoo and Amharic.
+WRITER_SYSTEM = """You write dental health posts for a public Telegram community run by a dentist in Ethiopia.
+Readers are mostly adults who want real understanding, not only simple tips. Each post is in English, Afaan Oromoo and Amharic.
+
+Style:
+- Give high-level understanding: explain what happens in the mouth or body and why, in plain words,
+  then what it means for the reader. Teach something most people do not already know.
+- For research news: say what researchers found or are studying, why it matters, and that it is research
+  (not yet everyday treatment) where that is true.
+- Do not repeat basic "brush twice a day" advice unless the topic is exactly that. Do not aim posts at children
+  unless the topic is about children.
+- Each language version: 4 to 6 sentences, about 500 to 700 characters, clear and warm. One emoji at the start is fine.
 
 Safety rules (very important, posts are published without human review):
-- Give only general, widely accepted oral-health advice: brushing, flossing, fluoride toothpaste, diet and sugar,
-  water, children's teeth, tobacco and khat effects, regular check-ups, warning signs that need a dentist.
+- Stay with mainstream, evidence-based dental science. Clearly say when something is early research.
 - NEVER name medicines, antibiotics or painkillers, and NEVER give doses.
 - NEVER diagnose, and never suggest home treatment for pain, swelling, bleeding or infection: say to see a dentist.
 - Do not state numbers, statistics or study results unless they appear in the source text.
-- Do not copy sentences from the source; write an original practical tip.
-- Each language version: 4 to 6 short sentences, about 500 to 700 characters, warm and simple.
-  Explain why it matters, then what to do; add when to see a dentist only where it fits. One emoji at the start is fine.
+- Do not copy sentences from the source; write original text.
 
 Language rules:
 - "om": natural everyday Afaan Oromoo in Qubee (Latin script).
 - "am": natural everyday Amharic in Ge'ez (Fidel) script.
 - All three versions must say the same thing.
 
-If the source cannot be turned into a useful practical tip for ordinary people
-(e.g. business news, company stocks, lawsuits, product ads, research too technical), set "skip" to true.
+If the source cannot be turned into a useful post for ordinary adults
+(e.g. business news, company stocks, lawsuits, product ads, local clinic announcements), set "skip" to true.
 
 Reply with ONLY a JSON object, no other text:
 {"skip": false, "en": "...", "om": "...", "am": "..."}"""
@@ -245,8 +308,13 @@ def load_posts(r):
     return out
 
 
+COMMON = {"your", "teeth", "tooth", "that", "this", "with", "dentist", "dental", "mouth", "they", "from", "have",
+          "will", "what", "when", "more", "also", "about", "which", "their", "health", "oral", "help", "helps",
+          "can't", "don't", "it's", "these", "there", "because", "keep", "even", "like", "make", "very"}
+
+
 def words(text):
-    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 3}
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 3 and w not in COMMON}
 
 
 def too_similar(tip, posts, log):
@@ -296,13 +364,14 @@ def fresh_news(r, log):
 
 def tip_from_news(r, posts, start, log):
     for item in fresh_news(r, log)[:3]:
-        if time.time() - start > 25:  # leave time for the tip bank fallback
+        if time.time() - start > 50:  # leave time for the other sources
             break
         r.sadd("seen_news", item["link"])
         try:
-            tip = write_tip(f"News headline: {item['title']}\n\nNews summary: {item['summary'][:2000]}")
+            tip = write_tip("Recent dental research or news. Explain it for ordinary adults.\n\n"
+                            f"Headline: {item['title']}\n\nSummary: {item['summary'][:2000]}")
             if tip and accept(tip, posts, log):
-                tip["source"] = item["link"]
+                tip["source"], tip["area"] = item["link"], "research news"
                 return tip
             log.append("news item skipped: " + item["title"][:80])
         except Exception as e:
@@ -325,29 +394,44 @@ def tip_from_bank(r, posts, start, log):
             tip = write_tip("Evergreen dental tip approved by the dentist. Keep the meaning exactly, "
                             f"expand it warmly and translate it:\n\n{text}")
             if tip and accept(tip, posts, log):
-                tip["source"] = "tip-bank:" + tip_id
+                tip["source"], tip["area"] = "tip-bank:" + tip_id, "basics"
                 return tip
         except Exception as e:
             log.append(f"tip {tip_id} failed: {e}")
     return None
 
 
+def pick_topics(r, posts, n=3):
+    """Up to n topics, each from a different subject area, avoiding recent areas and topics used lately."""
+    last = r.hgetall("topic_last") or {}
+    recent_areas = {p.get("area") for p in posts[:CATEGORY_GAP]}
+    fresh = [t for t in TOPICS if t[1] not in last or days_since(last[t[1]]) >= TOPIC_COOLDOWN_DAYS]
+    pool = [t for t in fresh if t[0] not in recent_areas] or fresh \
+        or sorted(TOPICS, key=lambda t: last.get(t[1], ""))[:10]  # all used lately: the longest-unused ones
+    random.shuffle(pool)
+    picked, areas = [], set()
+    for area, topic in pool:
+        if area not in areas:
+            picked.append((area, topic))
+            areas.add(area)
+        if len(picked) == n:
+            break
+    return picked
+
+
 def tip_from_topic(r, posts, start, log):
     avoid = "\n".join("- " + p["en"][:150] for p in posts[:60]) or "(none yet)"
-    last = r.hgetall("topic_last") or {}
-    ready = [t for t in TOPICS if t not in last or days_since(last[t]) >= TOPIC_COOLDOWN_DAYS]
-    if len(ready) < 3:  # most topics used lately: take the ones unused for longest
-        ready = sorted(TOPICS, key=lambda t: last.get(t, ""))[:6]
-    for topic in random.sample(ready, 3):
+    for area, topic in pick_topics(r, posts):
         if time.time() - start > TIME_BUDGET - 15:
             break
         try:
             tip = write_tip(
-                f"Write a NEW practical tip about this topic: {topic}.\n\n"
-                f"It must be clearly different from these earlier tips:\n{avoid}"
+                f"Write a NEW post about: {topic} (subject area: {area}).\n\n"
+                "It must be about a completely different subject from these earlier posts, "
+                f"not a rewording of any of them:\n{avoid}"
             )
             if tip and accept(tip, posts, log):
-                tip["source"] = "topic:" + topic
+                tip["source"], tip["area"] = "topic:" + topic, area
                 return tip
         except Exception as e:
             log.append(f"topic '{topic}' failed: {e}")
@@ -418,8 +502,8 @@ def remember(r, tip):
         return
     if source.startswith("topic:"):
         r.hset("topic_last", source[len("topic:"):], ts)
-    r.lpush("posts", json.dumps({"ts": ts, "source": source, "en": tip["en"], "om": tip["om"], "am": tip["am"]},
-                                ensure_ascii=False))
+    r.lpush("posts", json.dumps({"ts": ts, "source": source, "area": tip.get("area"),
+                                 "en": tip["en"], "om": tip["om"], "am": tip["am"]}, ensure_ascii=False))
     r.ltrim("posts", 0, 499)
 
 
