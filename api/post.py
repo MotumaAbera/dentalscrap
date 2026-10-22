@@ -153,7 +153,6 @@ def ask_claude(system, user, max_tokens=2000):
         json={
             **({"models": MODELS} if len(MODELS) > 1 else {"model": MODELS[0]}),
             "max_tokens": max_tokens,
-            "reasoning": {"effort": "low", "exclude": True},  # thinking models: keep tokens for the answer
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -173,7 +172,10 @@ def ask_claude(system, user, max_tokens=2000):
 
 def parse_json(text):
     text = re.sub(r"```(?:json)?", "", text).strip()
-    return json.loads(text[text.find("{"):text.rfind("}") + 1])
+    try:
+        return json.loads(text[text.find("{"):text.rfind("}") + 1])
+    except ValueError:
+        raise ValueError(f"model reply was not JSON: {text[:150]!r}")
 
 
 def write_tip(source_text):
