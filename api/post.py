@@ -32,7 +32,7 @@ LAST_MODEL = None
 NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.3"))   # chance to try news first
 FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.6"))  # otherwise: chance of a brand-new topic tip vs tip bank
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
-FOOTER = os.environ.get("FOOTER", "")
+FOOTER = os.environ.get("FOOTER", "Dr. Debela D.")
 TIME_BUDGET = 50  # seconds; stay under Vercel's 60s function limit
 
 FEEDS = [
@@ -339,8 +339,8 @@ def tip_from_bank_english(log):
 # ---------------- Telegram ----------------
 def format_message(tip):
     e = html.escape
-    parts = ["🦷 <b>Dental Tip · Gorsa Fayyaa Ilkaanii · የጥርስ ጤና ምክር</b>"]
-    for key, label in (("en", "English"), ("om", "Afaan Oromoo"), ("am", "አማርኛ")):
+    parts = ["🦷 <b>Dental Tip · የጥርስ ጤና ምክር · Gorsa Fayyaa Ilkaanii</b>"]
+    for key, label in (("en", "English"), ("am", "አማርኛ"), ("om", "Afaan Oromoo")):
         if tip.get(key):
             parts.append(f"<b>{label}</b>\n{e(tip[key])}")
     if SHOW_SOURCE and str(tip.get("source", "")).startswith("http"):
