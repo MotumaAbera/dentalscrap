@@ -40,6 +40,7 @@ TOPIC_COOLDOWN_DAYS = 60  # same topic not again before this (when enough other 
 CATEGORY_GAP = 4          # the next post avoids the subject areas of the last 4 posts
 MAX_TIMES = 2             # a tip is posted at most twice: the original + one repost
 SIMILARITY = 0.3          # word overlap above this counts as a repeat of a recent post
+READY_TARGET = 5          # spare posts written ahead of time, used when the AI is down
 
 FEEDS = [
     "https://www.sciencedaily.com/rss/health_medicine/dentistry.xml",
@@ -279,7 +280,7 @@ def ask_claude(system, user, max_tokens=2000):
 def parse_json(text):
     text = re.sub(r"```(?:json)?", "", text).strip()
     try:
-        return json.loads(text[text.find("{"):text.rfind("}") + 1])
+        return json.loads(text[text.find("{"):text.rfind("}") + 1], strict=False)  # allow line breaks in text
     except ValueError:
         raise ValueError(f"model reply was not JSON: {text[:150]!r}")
 
@@ -490,6 +491,32 @@ def tip_from_archive(posts, log):
             "count": post["count"]}
 
 
+def tip_from_ready(r, posts, log, take=True):
+    """A spare post written on an earlier run (never posted yet). take=False only peeks (for previews)."""
+    for raw in (r.lrange("ready", 0, READY_TARGET * 2) or []):
+        tip = json.loads(raw)
+        if take:
+            r.lrem("ready", 1, raw)
+        if not too_similar(tip, posts, log):
+            log.append("AI unavailable: posting a spare post written earlier")
+            return tip
+    return None
+
+
+def refill_ready(r, start, log):
+    """After posting, use leftover time to write one spare post for when the AI is down."""
+    if (r.llen("ready") or 0) >= READY_TARGET or time.time() - start > 45:
+        return
+    posts = load_posts(r)
+    posts = [{"en": json.loads(x)["en"], "last": now_iso(), "area": json.loads(x).get("area")}
+             for x in (r.lrange("ready", 0, -1) or [])] + posts  # avoid repeating spares too
+    tip = tip_from_topic(r, posts, start, log)
+    if tip:
+        r.rpush("ready", json.dumps(tip, ensure_ascii=False))
+        r.hset("topic_last", tip["source"][len("topic:"):], now_iso())  # reserve the topic
+        log.append("wrote a spare post for later")
+
+
 def tip_from_bank_english(r, log):
     """Last resort: the dentist-approved tip bank tip used longest ago, English only."""
     last = r.hgetall("tip_last") or {}
@@ -557,12 +584,14 @@ def run_once(dry_run=False):
             if tip:
                 break
     if not tip:
-        tip = tip_from_archive(posts, log) or tip_from_bank_english(r, log)
+        tip = (tip_from_ready(r, posts, log, take=not dry_run) or tip_from_archive(posts, log)
+               or tip_from_bank_english(r, log))
     message = format_message(tip)
     if dry_run:
         return {"posted": False, "dry_run": True, "message": message, "source": tip["source"], "log": log}
     send_telegram(message)
     remember(r, tip)
+    refill_ready(r, start, log)
     return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
 
 
