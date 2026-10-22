@@ -285,15 +285,38 @@ def tip_from_topic(r, start, log):
     return None
 
 
+# ---------------- Fallback (no AI needed, e.g. OpenRouter out of credits) ----------------
+def tip_from_archive(r, log):
+    """Repost an earlier AI tip that already passed the safety check, skipping the most recent ones."""
+    posts = r.lrange("posts", 0, 499) or []
+    older = posts[24:] or posts[1:] or posts
+    reposted = set(r.smembers("reposted") or [])
+    choices = [p for p in older if json.loads(p)["ts"] not in reposted]
+    if not choices and older:
+        r.delete("reposted")
+        choices = older
+    if not choices:
+        return None
+    post = json.loads(random.choice(choices))
+    r.sadd("reposted", post["ts"])
+    log.append("AI unavailable: reposting an earlier tip")
+    return {"en": post["en"], "om": post["om"], "am": post["am"], "source": "archive:" + post["ts"]}
+
+
+def tip_from_bank_english(log):
+    """Last resort: a dentist-approved tip bank tip, English only."""
+    tip_id, text = random.choice(TIPS)
+    log.append("AI unavailable and no earlier posts: posting an English tip bank tip")
+    return {"en": text, "source": "tip-bank-en:" + tip_id}
+
+
 # ---------------- Telegram ----------------
 def format_message(tip):
     e = html.escape
-    parts = [
-        "🦷 <b>Dental Tip · Gorsa Fayyaa Ilkaanii · የጥርስ ጤና ምክር</b>",
-        f"<b>English</b>\n{e(tip['en'])}",
-        f"<b>Afaan Oromoo</b>\n{e(tip['om'])}",
-        f"<b>አማርኛ</b>\n{e(tip['am'])}",
-    ]
+    parts = ["🦷 <b>Dental Tip · Gorsa Fayyaa Ilkaanii · የጥርስ ጤና ምክር</b>"]
+    for key, label in (("en", "English"), ("om", "Afaan Oromoo"), ("am", "አማርኛ")):
+        if tip.get(key):
+            parts.append(f"<b>{label}</b>\n{e(tip[key])}")
     if SHOW_SOURCE and str(tip.get("source", "")).startswith("http"):
         parts.append(f'📰 <a href="{e(tip["source"])}">Source</a>')
     if FOOTER:
@@ -325,15 +348,17 @@ def run_once(dry_run=False):
             tip = source_fn(r, start, log)
             if tip:
                 break
-    if not tip:
-        return {"posted": False, "reason": "no tip passed the checks", "log": log}
+    fallback = not tip
+    if fallback:
+        tip = tip_from_archive(r, log) or tip_from_bank_english(log)
     message = format_message(tip)
     if dry_run:
         return {"posted": False, "dry_run": True, "message": message, "source": tip["source"], "log": log}
     send_telegram(message)
-    r.lpush("posts", json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "source": tip["source"],
-                                 "en": tip["en"], "om": tip["om"], "am": tip["am"]}, ensure_ascii=False))
-    r.ltrim("posts", 0, 499)
+    if not fallback:  # only new AI tips go in the archive, so reposts don't pile up
+        r.lpush("posts", json.dumps({"ts": datetime.now(timezone.utc).isoformat(), "source": tip["source"],
+                                     "en": tip["en"], "om": tip["om"], "am": tip["am"]}, ensure_ascii=False))
+        r.ltrim("posts", 0, 499)
     return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
 
 
