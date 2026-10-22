@@ -7,6 +7,7 @@ Manual use in a browser:
   /api/post?key=YOUR_CRON_SECRET&dry=1   -> preview a tip (nothing is posted)
   /api/post?key=YOUR_CRON_SECRET         -> post one tip now
   /api/post?key=YOUR_CRON_SECRET&check=1 -> test all connections (nothing is posted)
+  /api/post?key=YOUR_CRON_SECRET&quiz=1&dry=1 -> preview a quiz (quizzes post on QUIZ_DAYS automatically)
 """
 
 import html
@@ -41,6 +42,19 @@ CATEGORY_GAP = 4          # the next post avoids the subject areas of the last 4
 MAX_TIMES = 2             # a tip is posted at most twice: the original + one repost
 SIMILARITY = 0.3          # word overlap above this counts as a repeat of a recent post
 READY_TARGET = 5          # spare posts written ahead of time, used when the AI is down
+IMAGE_RATIO = float(os.environ.get("IMAGE_RATIO", "0.5"))  # share of tip posts with a Pexels photo
+QUIZ_DAYS = {1, 4}        # Tuesday and Friday (Monday = 0): the first run of the day posts a quiz
+ADDIS = timezone(timedelta(hours=3))
+
+# Safe photo searches the AI may choose from (Pexels). Keeping a fixed list avoids odd or graphic images.
+IMAGE_QUERIES = [
+    "toothbrush", "toothpaste on toothbrush", "brushing teeth", "dental floss", "smiling african woman",
+    "smiling african man", "african family smiling", "smiling child", "dentist examining patient",
+    "dental clinic", "dental chair", "dental x-ray", "dental tools", "dental implant model", "teeth model",
+    "coffee ceremony", "cup of tea", "sugarcane", "sweets and candy", "soft drinks", "fresh vegetables",
+    "fruits", "glass of water", "milk", "honey", "bread", "elderly african man smiling", "pregnant woman",
+    "cigarette smoke", "sports", "toothache", "mouthwash", "chewing stick",
+]
 
 FEEDS = [
     "https://www.sciencedaily.com/rss/health_medicine/dentistry.xml",
@@ -223,8 +237,10 @@ Language rules:
 If the source cannot be turned into a useful dental post for people in Ethiopia (e.g. not mainly about teeth
 or gums, business news, company stocks, lawsuits, product ads, clinic announcements abroad), set "skip" to true.
 
+Also choose "image": the ONE phrase from this list that best fits the post as a photo: """ + ", ".join(IMAGE_QUERIES) + """
+
 Reply with ONLY a JSON object, no other text:
-{"skip": false, "en": "...", "om": "...", "am": "..."}"""
+{"skip": false, "en": "...", "om": "...", "am": "...", "image": "..."}"""
 
 CHECKER_SYSTEM = """You are a strict dental-health and language reviewer. A tip will be published automatically
 to a public group in English, Afaan Oromoo (Qubee script) and Amharic (Ge'ez script) with no human review.
@@ -241,6 +257,24 @@ Reject (ok=false) if ANY of these is true:
 - Anything offensive, political, or commercial
 
 Reply with ONLY a JSON object: {"ok": true, "reason": ""}"""
+
+QUIZ_SYSTEM = """You write dental quizzes for a public Telegram community run by a dentist in Ethiopia.
+Readers are ordinary people in Ethiopia. The quiz is a Telegram quiz poll in English, Amharic and Afaan Oromoo.
+
+Rules:
+- DENTAL ONLY, Ethiopian context where it fits (buna, shai, sugarcane, kolo, khat, mefakia, fasting, Rift Valley water).
+- A common myth-or-fact or a practical question with ONE clearly correct answer, based on mainstream dental science.
+- Same safety rules as always: no medicine names or doses, no diagnosis, no home treatment for pain or infection.
+- Strict length limits (Telegram): each question line at most 90 characters; 2 to 4 options; each option text
+  in each language at most 28 characters; "explanation" in English at most 180 characters.
+- "answer_en", "answer_am", "answer_om": the full answer post published later, 4 to 6 sentences each,
+  about 500 to 700 characters: restate the question, give the correct answer, explain why, and the practical tip.
+- "am" in Ge'ez (Fidel) script, "om" in Afaan Oromoo Qubee (Latin script). All languages say the same thing.
+
+Reply with ONLY a JSON object, no other text:
+{"question_en": "...", "question_am": "...", "question_om": "...",
+ "options": [{"en": "...", "am": "...", "om": "..."}, ...], "correct": 0,
+ "explanation": "...", "answer_en": "...", "answer_am": "...", "answer_om": "..."}"""
 
 def ask_claude(system, user, max_tokens=2000):
     """Send a prompt through OpenRouter and return the text reply."""
@@ -488,7 +522,7 @@ def tip_from_archive(posts, log):
         post = min(older, key=lambda p: (p["count"], p["last"]))
         log.append(f"AI unavailable and no tip past {REPEAT_DAYS} days: reposting the oldest one")
     return {"en": post["en"], "om": post["om"], "am": post["am"], "source": "archive:" + post["ts"],
-            "count": post["count"]}
+            "count": post["count"], "image": post.get("image")}
 
 
 def tip_from_ready(r, posts, log, take=True):
@@ -528,7 +562,7 @@ def tip_from_bank_english(r, log):
 # ---------------- Telegram ----------------
 def format_message(tip):
     e = html.escape
-    parts = ["🦷 <b>Dental Tip · የጥርስ ጤና ምክር · Gorsa Fayyaa Ilkaanii</b>"]
+    parts = [tip.get("title") or "🦷 <b>Dental Tip · የጥርስ ጤና ምክር · Gorsa Fayyaa Ilkaanii</b>"]
     for key, label in (("en", "English"), ("am", "አማርኛ"), ("om", "Afaan Oromoo")):
         if tip.get(key):
             parts.append(f"<b>{label}</b>\n{e(tip[key])}")
@@ -539,15 +573,120 @@ def format_message(tip):
     return "\n\n".join(parts)
 
 
-def send_telegram(text):
+def telegram(method, payload):
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
-    resp = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                         json={"chat_id": chat_id, "text": text, "parse_mode": "HTML",
-                               "disable_web_page_preview": True}, timeout=15)
+    resp = requests.post(f"https://api.telegram.org/bot{token}/{method}",
+                         json={"chat_id": chat_id, **payload}, timeout=15)
     if not resp.ok:
         raise RuntimeError(f"Telegram error {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
+def send_telegram(text, image_url=None):
+    """Send a post; with image_url the picture is shown large above the text (link preview,
+    so long text still fits in one message)."""
+    preview = ({"url": image_url, "prefer_large_media": True, "show_above_text": True} if image_url
+               else {"is_disabled": True})
+    try:
+        telegram("sendMessage", {"text": text, "parse_mode": "HTML", "link_preview_options": preview})
+    except RuntimeError:
+        if not image_url:
+            raise
+        telegram("sendMessage", {"text": text, "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}})
+
+
+def send_quiz(quiz):
+    options = [" · ".join(o[k] for k in ("en", "am", "om")) for o in quiz["options"]]
+    question = "🧩 " + "\n".join(quiz[k] for k in ("question_en", "question_am", "question_om"))
+    telegram("sendPoll", {"question": question[:300], "options": [{"text": o[:100]} for o in options],
+                          "type": "quiz", "correct_option_id": quiz["correct"], "is_anonymous": True,
+                          "explanation": quiz.get("explanation", "")[:200]})
+
+
+# ---------------- Pictures (Pexels) ----------------
+def pexels_image(r, query, log):
+    """A Pexels photo URL for the query that this bot has not used before, or None."""
+    key = os.environ.get("PEXELS_API_KEY")
+    if not key or query not in IMAGE_QUERIES:
+        return None
+    try:
+        resp = requests.get("https://api.pexels.com/v1/search", headers={"Authorization": key},
+                            params={"query": query, "per_page": 30, "orientation": "landscape"}, timeout=10)
+        photos = resp.json().get("photos", []) if resp.ok else []
+    except Exception as e:
+        log.append(f"pexels failed: {e}")
+        return None
+    random.shuffle(photos)
+    for photo in photos:
+        if not r.sismember("used_images", str(photo["id"])):
+            r.sadd("used_images", str(photo["id"]))
+            return photo["src"]["large"]
+    log.append(f"no unused Pexels photo for '{query}'")
+    return None
+
+
+def pick_image(r, tip, log):
+    """News posts show the article's own preview; about IMAGE_RATIO of other posts get a Pexels photo."""
+    source = str(tip.get("source", ""))
+    if source.startswith("http"):
+        return source
+    if tip.get("image") and random.random() < IMAGE_RATIO:
+        return pexels_image(r, tip["image"], log)
+    return None
+
+
+# ---------------- Quiz ----------------
+def write_quiz(r, posts, start, log):
+    """A checked quiz on a topic from a fresh subject area, or None."""
+    avoid = "\n".join("- " + p["en"][:150] for p in posts[:60]) or "(none yet)"
+    for area, topic in pick_topics(r, posts, n=2):
+        if time.time() - start > TIME_BUDGET - 30:
+            break
+        try:
+            quiz = parse_json(ask_claude(QUIZ_SYSTEM, f"Write a quiz about: {topic} (subject area: {area}).\n\n"
+                                         f"It must be about a different subject from these earlier posts:\n{avoid}",
+                                         max_tokens=4000))
+            problem = quiz_problem(quiz)
+            if problem:
+                log.append("quiz rejected: " + problem)
+                continue
+            answer = {"en": quiz["answer_en"], "am": quiz["answer_am"], "om": quiz["answer_om"]}
+            if accept(answer, posts, log):
+                quiz.update(source="quiz:" + topic, area=area)
+                return quiz
+        except Exception as e:
+            log.append(f"quiz '{topic}' failed: {e}")
+    return None
+
+
+def quiz_problem(quiz):
+    """Check Telegram's limits and the scripts; returns what is wrong, or None."""
+    try:
+        options, correct = quiz["options"], int(quiz["correct"])
+        lines = [quiz[k] for k in ("question_en", "question_am", "question_om")]
+        if not 2 <= len(options) <= 4 or not 0 <= correct < len(options):
+            return "bad options"
+        if len("🧩 " + "\n".join(lines)) > 300 or any(len(" · ".join(o[k] for k in ("en", "am", "om"))) > 100
+                                                     for o in options):
+            return "too long for Telegram"
+        texts = {k: " ".join([quiz["question_" + k], quiz["answer_" + k]] + [o[k] for o in options])
+                 for k in ("en", "am", "om")}
+    except (KeyError, TypeError, ValueError):
+        return "missing fields"
+    return wrong_script(texts)
+
+
+def quiz_due(r):
+    today = datetime.now(ADDIS)
+    return today.weekday() in QUIZ_DAYS and r.get("quiz_day") != today.date().isoformat()
+
+
+def answer_post(quiz):
+    return {"title": "🧩 <b>Quiz Answer · የጥያቄው መልስ · Deebii Gaaffii</b>",
+            "en": quiz["answer_en"], "am": quiz["answer_am"], "om": quiz["answer_om"],
+            "source": "quiz-answer:" + quiz["source"][len("quiz:"):], "area": quiz.get("area")}
 
 
 # ---------------- Main job ----------------
@@ -563,17 +702,46 @@ def remember(r, tip):
         return
     if source.startswith("topic:"):
         r.hset("topic_last", source[len("topic:"):], ts)
-    r.lpush("posts", json.dumps({"ts": ts, "source": source, "area": tip.get("area"),
+    r.lpush("posts", json.dumps({"ts": ts, "source": source, "area": tip.get("area"), "image": tip.get("image"),
                                  "en": tip["en"], "om": tip["om"], "am": tip["am"]}, ensure_ascii=False))
     r.ltrim("posts", 0, 499)
 
 
-def run_once(dry_run=False):
+def run_quiz(r, posts, start, log, dry_run):
+    """Post a quiz; its full answer is posted by the next run. Returns the result, or None if no quiz was ready."""
+    quiz = write_quiz(r, posts, start, log)
+    if not quiz:
+        return None
+    if dry_run:
+        return {"posted": False, "dry_run": True, "quiz": quiz, "log": log}
+    send_quiz(quiz)
+    r.set("pending_quiz", json.dumps(quiz, ensure_ascii=False))
+    r.set("quiz_day", datetime.now(ADDIS).date().isoformat())
+    r.hset("topic_last", quiz["source"][len("quiz:"):], now_iso())
+    return {"posted": True, "source": quiz["source"], "seconds": round(time.time() - start, 1), "log": log}
+
+
+def run_once(dry_run=False, force_quiz=False):
     global DEADLINE
     start, log = time.time(), []
     DEADLINE = start + TIME_BUDGET
     r = get_redis()
     posts = load_posts(r)
+    pending = r.get("pending_quiz")
+    if pending and not force_quiz:  # explain the last quiz before anything else
+        tip = answer_post(json.loads(pending))
+        message = format_message(tip)
+        if dry_run:
+            return {"posted": False, "dry_run": True, "message": message, "source": tip["source"], "log": log}
+        send_telegram(message)
+        r.delete("pending_quiz")
+        remember(r, tip)
+        return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
+    if force_quiz or quiz_due(r):
+        result = run_quiz(r, posts, start, log, dry_run)
+        if result:
+            return result
+        log.append("no quiz passed the checks: posting a normal tip instead")
     tip = None
     if random.random() < NEWS_RATIO:
         tip = tip_from_news(r, posts, start, log)
@@ -587,9 +755,11 @@ def run_once(dry_run=False):
         tip = (tip_from_ready(r, posts, log, take=not dry_run) or tip_from_archive(posts, log)
                or tip_from_bank_english(r, log))
     message = format_message(tip)
+    image = pick_image(r, tip, log) if not dry_run else (tip.get("image") and f"(Pexels photo: {tip['image']})")
     if dry_run:
-        return {"posted": False, "dry_run": True, "message": message, "source": tip["source"], "log": log}
-    send_telegram(message)
+        return {"posted": False, "dry_run": True, "message": message, "image": image, "source": tip["source"],
+                "log": log}
+    send_telegram(message, image)
     remember(r, tip)
     refill_ready(r, start, log)
     return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
@@ -627,6 +797,17 @@ def health_check():
     except Exception as e:
         results["openrouter"] = f"FAIL: {e}"
 
+    pexels = os.environ.get("PEXELS_API_KEY")
+    try:
+        if not pexels:
+            results["pexels"] = "WARNING: PEXELS_API_KEY not set, posts will have no photos"
+        else:
+            resp = requests.get("https://api.pexels.com/v1/search", headers={"Authorization": pexels},
+                                params={"query": "toothbrush", "per_page": 1}, timeout=10)
+            results["pexels"] = "OK" if resp.ok else f"FAIL: Pexels error {resp.status_code}"
+    except Exception as e:
+        results["pexels"] = f"FAIL: {e}"
+
     results["cron_secret"] = "OK"  # if you can see this page, the key works
     results["all_ok"] = all(str(v).startswith("OK") for v in results.values() if v is not True)
     return results
@@ -652,6 +833,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             if query.get("check", ["0"])[0] == "1":
                 return self._send(200, health_check())
-            self._send(200, run_once(dry_run=query.get("dry", ["0"])[0] == "1"))
+            self._send(200, run_once(dry_run=query.get("dry", ["0"])[0] == "1",
+                                     force_quiz=query.get("quiz", ["0"])[0] == "1"))
         except Exception as e:
             self._send(500, {"error": str(e)})
