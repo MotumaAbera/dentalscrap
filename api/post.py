@@ -185,7 +185,25 @@ def write_tip(source_text):
     return data
 
 
+def is_ethiopic(c):
+    return "ሀ" <= c <= "᎟" or "ⶀ" <= c <= "⷟" or "꬀" <= c <= "꬯"
+
+
+def wrong_script(tip):
+    """Catch letters from other scripts (e.g. a Bengali word inside the Amharic) that the AI check can miss."""
+    for key, allowed in (("en", lambda c: c < "ɐ"), ("om", lambda c: c < "ɐ"),
+                         ("am", lambda c: is_ethiopic(c) or c < "ɐ")):
+        bad = [c for c in tip[key] if c.isalpha() and not allowed(c)]
+        if bad:
+            return f"{key} has letters from another script: {''.join(bad[:10])!r}"
+    return None
+
+
 def passes_check(tip, log):
+    problem = wrong_script(tip)
+    if problem:
+        log.append("rejected: " + problem)
+        return False
     payload = json.dumps({k: tip[k] for k in ("en", "om", "am")}, ensure_ascii=False)
     result = parse_json(ask_claude(CHECKER_SYSTEM, payload, max_tokens=800))
     if not result.get("ok"):
