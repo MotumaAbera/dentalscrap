@@ -138,7 +138,7 @@ Reject (ok=false) if ANY of these is true:
 
 Reply with ONLY a JSON object: {"ok": true, "reason": ""}"""
 
-def ask_claude(system, user, max_tokens=1200):
+def ask_claude(system, user, max_tokens=2000):
     """Send a prompt through OpenRouter and return the text reply."""
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
@@ -153,6 +153,7 @@ def ask_claude(system, user, max_tokens=1200):
         json={
             **({"models": MODELS} if len(MODELS) > 1 else {"model": MODELS[0]}),
             "max_tokens": max_tokens,
+            "reasoning": {"enabled": False},  # thinking models: spend tokens on the answer
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -184,7 +185,7 @@ def write_tip(source_text):
 
 def passes_check(tip, log):
     payload = json.dumps({k: tip[k] for k in ("en", "om", "am")}, ensure_ascii=False)
-    result = parse_json(ask_claude(CHECKER_SYSTEM, payload, max_tokens=300))
+    result = parse_json(ask_claude(CHECKER_SYSTEM, payload, max_tokens=800))
     if not result.get("ok"):
         log.append("rejected by safety check: " + str(result.get("reason")))
         return False
@@ -394,7 +395,7 @@ def health_check():
         results["telegram_group"] = f"FAIL: {e}"
 
     try:
-        reply = ask_claude("Reply with the single word OK.", "ping", max_tokens=10)
+        reply = ask_claude("Reply with the single word OK.", "ping", max_tokens=200)
         results["openrouter"] = f"OK (model {LAST_MODEL or MODEL} replied: {reply.strip()[:20]})"
     except Exception as e:
         results["openrouter"] = f"FAIL: {e}"
