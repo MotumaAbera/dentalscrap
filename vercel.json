@@ -1,6 +1,6 @@
 {
   "framework": null,
   "functions": {
-    "api/post.py": { "maxDuration": 60 }
+    "api/post.py": { "maxDuration": 120 }
   }
 }

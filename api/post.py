@@ -29,11 +29,12 @@ from upstash_redis import Redis
 MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 MODELS = [m.strip() for m in MODEL.split(",") if m.strip()]
 LAST_MODEL = None
+DEADLINE = None  # set per run; AI calls must finish before it
 NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.3"))   # chance to try news first
 FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.6"))  # otherwise: chance of a brand-new topic tip vs tip bank
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
 FOOTER = os.environ.get("FOOTER", "Dr. Debela D.")
-TIME_BUDGET = 50  # seconds; stay under Vercel's 60s function limit
+TIME_BUDGET = 100  # seconds; stay under the 120s maxDuration in vercel.json
 REPEAT_DAYS = int(os.environ.get("REPEAT_DAYS", "60"))  # same tip / tip bank tip not again before this
 TOPIC_COOLDOWN_DAYS = 14  # same topic not again before this (when enough other topics are left)
 MAX_TIMES = 2             # a tip is posted at most twice: the original + one repost
@@ -148,6 +149,9 @@ def ask_claude(system, user, max_tokens=2000):
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY not set")
+    timeout = 40 if DEADLINE is None else min(40, DEADLINE - time.time())
+    if timeout < 5:
+        raise RuntimeError("out of time for another AI call")
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={
@@ -163,7 +167,7 @@ def ask_claude(system, user, max_tokens=2000):
                 {"role": "user", "content": user},
             ],
         },
-        timeout=25,
+        timeout=timeout,
     )
     if not resp.ok:
         raise RuntimeError(f"OpenRouter error {resp.status_code}: {resp.text[:300]}")
@@ -420,7 +424,9 @@ def remember(r, tip):
 
 
 def run_once(dry_run=False):
+    global DEADLINE
     start, log = time.time(), []
+    DEADLINE = start + TIME_BUDGET
     r = get_redis()
     posts = load_posts(r)
     tip = None
