@@ -153,7 +153,7 @@ def ask_claude(system, user, max_tokens=2000):
         json={
             **({"models": MODELS} if len(MODELS) > 1 else {"model": MODELS[0]}),
             "max_tokens": max_tokens,
-            "reasoning": {"enabled": False},  # thinking models: spend tokens on the answer
+            "reasoning": {"effort": "low", "exclude": True},  # thinking models: keep tokens for the answer
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
