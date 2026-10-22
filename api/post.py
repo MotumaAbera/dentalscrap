@@ -570,6 +570,8 @@ def format_message(tip):
         parts.append(f'📰 <a href="{e(tip["source"])}">Source</a>')
     if FOOTER:
         parts.append(e(FOOTER))
+    if tip.get("credit"):
+        parts.append(tip["credit"])
     return "\n\n".join(parts)
 
 
@@ -605,36 +607,63 @@ def send_quiz(quiz):
                           "explanation": quiz.get("explanation", "")[:200]})
 
 
-# ---------------- Pictures (Pexels) ----------------
-def pexels_image(r, query, log):
-    """A Pexels photo URL for the query that this bot has not used before, or None."""
-    key = os.environ.get("PEXELS_API_KEY")
-    if not key or query not in IMAGE_QUERIES:
-        return None
+# ---------------- Pictures (Unsplash or Pixabay, whichever key is set) ----------------
+def search_photos(query, log):
+    """Photos for a query as (id, url, credit_html) from Unsplash or Pixabay."""
+    e = html.escape
     try:
-        resp = requests.get("https://api.pexels.com/v1/search", headers={"Authorization": key},
-                            params={"query": query, "per_page": 30, "orientation": "landscape"}, timeout=10)
-        photos = resp.json().get("photos", []) if resp.ok else []
-    except Exception as e:
-        log.append(f"pexels failed: {e}")
-        return None
+        if os.environ.get("UNSPLASH_ACCESS_KEY"):
+            resp = requests.get("https://api.unsplash.com/search/photos",
+                                headers={"Authorization": "Client-ID " + os.environ["UNSPLASH_ACCESS_KEY"]},
+                                params={"query": query, "per_page": 30, "orientation": "landscape",
+                                        "content_filter": "high"}, timeout=10)
+            utm = "?utm_source=dental_tips_bot&utm_medium=referral"
+            return [("u" + p["id"], p["urls"]["regular"],
+                     f'📷 Photo: <a href="{e(p["user"]["links"]["html"] + utm)}">{e(p["user"]["name"])}</a>'
+                     f' / <a href="https://unsplash.com/{utm}">Unsplash</a>', p["links"]["download_location"])
+                    for p in (resp.json().get("results", []) if resp.ok else [])]
+        if os.environ.get("PIXABAY_API_KEY"):
+            resp = requests.get("https://pixabay.com/api/",
+                                params={"key": os.environ["PIXABAY_API_KEY"], "q": query, "image_type": "photo",
+                                        "orientation": "horizontal", "safesearch": "true", "per_page": 30},
+                                timeout=10)
+            return [("p" + str(p["id"]), p["largeImageURL"], "📷 Image: Pixabay", None)
+                    for p in (resp.json().get("hits", []) if resp.ok else [])]
+    except Exception as ex:
+        log.append(f"photo search failed: {ex}")
+    return []
+
+
+def stock_image(r, query, log):
+    """(url, credit) of a photo for the query that this bot has not used before, or (None, None)."""
+    if query not in IMAGE_QUERIES:
+        return None, None
+    photos = search_photos(query, log)
     random.shuffle(photos)
-    for photo in photos:
-        if not r.sismember("used_images", str(photo["id"])):
-            r.sadd("used_images", str(photo["id"]))
-            return photo["src"]["large"]
-    log.append(f"no unused Pexels photo for '{query}'")
-    return None
+    for photo_id, url, credit, download_location in photos:
+        if not r.sismember("used_images", photo_id):
+            r.sadd("used_images", photo_id)
+            if download_location:  # Unsplash asks apps to report each photo they use
+                try:
+                    requests.get(download_location, timeout=5,
+                                 headers={"Authorization": "Client-ID " + os.environ["UNSPLASH_ACCESS_KEY"]})
+                except Exception:
+                    pass
+            return url, credit
+    if photos:
+        log.append(f"no unused photo for '{query}'")
+    return None, None
 
 
 def pick_image(r, tip, log):
-    """News posts show the article's own preview; about IMAGE_RATIO of other posts get a Pexels photo."""
+    """News posts show the article's own preview; about IMAGE_RATIO of other posts get a stock photo.
+    Returns (url, credit)."""
     source = str(tip.get("source", ""))
     if source.startswith("http"):
-        return source
+        return source, None
     if tip.get("image") and random.random() < IMAGE_RATIO:
-        return pexels_image(r, tip["image"], log)
-    return None
+        return stock_image(r, tip["image"], log)
+    return None, None
 
 
 # ---------------- Quiz ----------------
@@ -754,12 +783,11 @@ def run_once(dry_run=False, force_quiz=False):
     if not tip:
         tip = (tip_from_ready(r, posts, log, take=not dry_run) or tip_from_archive(posts, log)
                or tip_from_bank_english(r, log))
-    message = format_message(tip)
-    image = pick_image(r, tip, log) if not dry_run else (tip.get("image") and f"(Pexels photo: {tip['image']})")
     if dry_run:
-        return {"posted": False, "dry_run": True, "message": message, "image": image, "source": tip["source"],
-                "log": log}
-    send_telegram(message, image)
+        return {"posted": False, "dry_run": True, "message": format_message(tip), "source": tip["source"],
+                "image": tip.get("image") and f"(photo search: {tip['image']})", "log": log}
+    image, tip["credit"] = pick_image(r, tip, log)
+    send_telegram(format_message(tip), image)
     remember(r, tip)
     refill_ready(r, start, log)
     return {"posted": True, "source": tip["source"], "seconds": round(time.time() - start, 1), "log": log}
@@ -797,16 +825,12 @@ def health_check():
     except Exception as e:
         results["openrouter"] = f"FAIL: {e}"
 
-    pexels = os.environ.get("PEXELS_API_KEY")
-    try:
-        if not pexels:
-            results["pexels"] = "WARNING: PEXELS_API_KEY not set, posts will have no photos"
-        else:
-            resp = requests.get("https://api.pexels.com/v1/search", headers={"Authorization": pexels},
-                                params={"query": "toothbrush", "per_page": 1}, timeout=10)
-            results["pexels"] = "OK" if resp.ok else f"FAIL: Pexels error {resp.status_code}"
-    except Exception as e:
-        results["pexels"] = f"FAIL: {e}"
+    if not (os.environ.get("UNSPLASH_ACCESS_KEY") or os.environ.get("PIXABAY_API_KEY")):
+        results["photos"] = "WARNING: no UNSPLASH_ACCESS_KEY or PIXABAY_API_KEY set, tip posts will have no photos"
+    else:
+        log = []
+        found = search_photos("toothbrush", log)
+        results["photos"] = f"OK ({len(found)} photos found)" if found else f"FAIL: photo search found nothing {log}"
 
     results["cron_secret"] = "OK"  # if you can see this page, the key works
     results["all_ok"] = all(str(v).startswith("OK") for v in results.values() if v is not True)
