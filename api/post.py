@@ -24,8 +24,11 @@ import requests
 from upstash_redis import Redis
 
 # ---------------- Settings (Vercel environment variables) ----------------
-# Any model from https://openrouter.ai/models (copy its exact ID)
+# Any model from https://openrouter.ai/models (copy its exact ID).
+# Several IDs separated by commas = backups: OpenRouter uses the first one that works.
 MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
+MODELS = [m.strip() for m in MODEL.split(",") if m.strip()]
+LAST_MODEL = None
 NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.3"))   # chance to try news first
 FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.6"))  # otherwise: chance of a brand-new topic tip vs tip bank
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
@@ -148,7 +151,7 @@ def ask_claude(system, user, max_tokens=1200):
             "X-Title": "Dental Tips Bot",
         },
         json={
-            "model": MODEL,
+            **({"models": MODELS} if len(MODELS) > 1 else {"model": MODELS[0]}),
             "max_tokens": max_tokens,
             "messages": [
                 {"role": "system", "content": system},
@@ -162,6 +165,8 @@ def ask_claude(system, user, max_tokens=1200):
     data = resp.json()
     if "choices" not in data:
         raise RuntimeError(f"OpenRouter error: {str(data)[:300]}")
+    global LAST_MODEL
+    LAST_MODEL = data.get("model")  # which backup model actually answered
     return data["choices"][0]["message"]["content"] or ""
 
 
@@ -390,7 +395,7 @@ def health_check():
 
     try:
         reply = ask_claude("Reply with the single word OK.", "ping", max_tokens=10)
-        results["openrouter"] = f"OK (model {MODEL} replied: {reply.strip()[:20]})"
+        results["openrouter"] = f"OK (model {LAST_MODEL or MODEL} replied: {reply.strip()[:20]})"
     except Exception as e:
         results["openrouter"] = f"FAIL: {e}"
 
