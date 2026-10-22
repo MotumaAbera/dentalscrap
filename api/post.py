@@ -52,8 +52,8 @@ IMAGE_QUERIES = [
     "smiling african man", "african family smiling", "smiling child", "dentist examining patient",
     "dental clinic", "dental chair", "dental x-ray", "dental tools", "dental implant model", "teeth model",
     "coffee ceremony", "cup of tea", "sugarcane", "sweets and candy", "soft drinks", "fresh vegetables",
-    "fruits", "glass of water", "milk", "honey", "bread", "elderly african man smiling", "pregnant woman",
-    "cigarette smoke", "sports", "toothache", "mouthwash", "chewing stick",
+    "fruits", "glass of water", "milk", "honey", "bread", "elderly african man smiling",
+    "cigarette smoke", "sports", "mouthwash", "chewing stick", "injera", "khat leaves",
 ]
 
 FEEDS = [
@@ -607,9 +607,9 @@ def send_quiz(quiz):
                           "explanation": quiz.get("explanation", "")[:200]})
 
 
-# ---------------- Pictures (Unsplash or Pixabay, whichever key is set) ----------------
+# ---------------- Pictures (Wikimedia Commons by default; Unsplash or Pixabay if a key is set) ----------------
 def search_photos(query, log):
-    """Photos for a query as (id, url, credit_html) from Unsplash or Pixabay."""
+    """Photos for a query as (id, url, credit_html, download_location) from Unsplash, Pixabay or Wikimedia."""
     e = html.escape
     try:
         if os.environ.get("UNSPLASH_ACCESS_KEY"):
@@ -629,9 +629,40 @@ def search_photos(query, log):
                                 timeout=10)
             return [("p" + str(p["id"]), p["largeImageURL"], "📷 Image: Pixabay", None)
                     for p in (resp.json().get("hits", []) if resp.ok else [])]
+        return wikimedia_photos(query)
     except Exception as ex:
         log.append(f"photo search failed: {ex}")
     return []
+
+
+# Wikimedia Commons (default, no key): only real, free-licensed landscape photos, no drawings or medical gore
+WIKI_SKIP = re.compile(r"wellcome|satire|caricature|cartoon|lithograph|litografia|engraving|drawing|painting|"
+                       r"illustration|sketch|poster|diagram|chart|map\b|logo|blanco|medizinal|herbarium|museum|"
+                       r"\(1[0-9]{3}|\b1[0-8][0-9]{2}\b|operation|surgery|surgical|wound|blood|disease|infect|"
+                       r"tumou?r|cancer|lesion|autopsy|skull|dead|nude|naked", re.I)
+WIKI_LICENSE = re.compile(r"^(cc0|public domain|no restrictions|cc by(-sa)? [0-9.]+)$", re.I)
+
+
+def wikimedia_photos(query):
+    resp = requests.get("https://commons.wikimedia.org/w/api.php", timeout=10,
+                        headers={"User-Agent": "DrDebelaDentalBot/1.0 (https://t.me/drdebeladental)"},
+                        params={"action": "query", "format": "json", "generator": "search",
+                                "gsrsearch": "filetype:bitmap " + query, "gsrnamespace": 6, "gsrlimit": 40,
+                                "prop": "imageinfo", "iiprop": "url|extmetadata|size", "iiurlwidth": 1280})
+    photos = []
+    for page in ((resp.json().get("query") or {}).get("pages") or {}).values() if resp.ok else []:
+        info = page["imageinfo"][0]
+        meta = info.get("extmetadata", {})
+        license_ = meta.get("LicenseShortName", {}).get("value", "").strip()
+        about = page["title"] + " " + re.sub("<[^>]+>", "", meta.get("ImageDescription", {}).get("value", ""))[:300]
+        if info["width"] < 1000 or info["width"] <= info["height"] or not WIKI_LICENSE.match(license_) \
+                or WIKI_SKIP.search(about):
+            continue
+        artist = re.sub(r"<[^>]+>|\s+", " ", meta.get("Artist", {}).get("value", "")).strip()[:60] or "Unknown"
+        credit = (f'📷 <a href="{html.escape(info["descriptionurl"])}">{html.escape(artist)}</a>, '
+                  f"{html.escape(license_)}, via Wikimedia Commons")
+        photos.append(("w" + str(page["pageid"]), info.get("thumburl") or info["url"], credit, None))
+    return photos
 
 
 def stock_image(r, query, log):
@@ -825,12 +856,12 @@ def health_check():
     except Exception as e:
         results["openrouter"] = f"FAIL: {e}"
 
-    if not (os.environ.get("UNSPLASH_ACCESS_KEY") or os.environ.get("PIXABAY_API_KEY")):
-        results["photos"] = "WARNING: no UNSPLASH_ACCESS_KEY or PIXABAY_API_KEY set, tip posts will have no photos"
-    else:
-        log = []
-        found = search_photos("toothbrush", log)
-        results["photos"] = f"OK ({len(found)} photos found)" if found else f"FAIL: photo search found nothing {log}"
+    log = []
+    found = search_photos("toothbrush", log)
+    provider = ("Unsplash" if os.environ.get("UNSPLASH_ACCESS_KEY") else
+                "Pixabay" if os.environ.get("PIXABAY_API_KEY") else "Wikimedia Commons")
+    results["photos"] = (f"OK ({provider}, {len(found)} photos found)" if found
+                         else f"FAIL: {provider} photo search found nothing {log}")
 
     results["cron_secret"] = "OK"  # if you can see this page, the key works
     results["all_ok"] = all(str(v).startswith("OK") for v in results.values() if v is not True)
