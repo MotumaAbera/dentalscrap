@@ -30,7 +30,7 @@ MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 MODELS = [m.strip() for m in MODEL.split(",") if m.strip()]
 LAST_MODEL = None
 DEADLINE = None  # set per run; AI calls must finish before it
-NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.45"))  # chance to try research news first
+NEWS_RATIO = float(os.environ.get("NEWS_RATIO", "0.25"))  # chance to try dental research news first
 FRESH_RATIO = float(os.environ.get("FRESH_RATIO", "0.9"))  # otherwise: chance of a new topic post vs basic tip bank
 SHOW_SOURCE = os.environ.get("SHOW_SOURCE", "true").lower() == "true"
 FOOTER = os.environ.get("FOOTER", "Dr. Debela D.")
@@ -54,71 +54,98 @@ KEYWORDS = ["dental", "dentist", "teeth", "tooth", "oral", "gum", "cavity", "cav
 MAX_NEWS_AGE_DAYS = 10
 
 # Topics for new posts, grouped by subject area. Consecutive posts come from different areas,
-# and a topic is not reused for TOPIC_COOLDOWN_DAYS. Add topics freely.
+# and a topic is not reused for TOPIC_COOLDOWN_DAYS. Dental only, Ethiopian context. Add topics freely.
 TOPIC_AREAS = {
-    "mouth-body connection": [
-        "gum disease and heart disease: what the link means", "gum disease and diabetes: a two-way relationship",
-        "oral health and pregnancy outcomes", "oral bacteria and pneumonia in older adults",
-        "periodontitis and inflammation in the whole body", "oral health and brain health research",
-        "the mouth as an early warning sign of other diseases",
+    "Ethiopian food and drink": [
+        "sugar in buna (coffee ceremony): three rounds of sweet coffee and your teeth",
+        "sweet shai (tea) through the day and tooth decay",
+        "chewing sugarcane: sugar, hard fibres and teeth",
+        "kolo, dabo kolo and sticky snacks between teeth",
+        "honey and tej: natural sugar still causes cavities",
+        "soft drinks and juice sold in shops: acid and sugar on teeth",
+        "teff, milk, ayib and vegetables: foods that help teeth and gums",
+        "coffee and tea stains on teeth and how to reduce them",
     ],
-    "oral microbiome": [
-        "the oral microbiome: friendly and harmful bacteria", "how plaque biofilm forms and why it is hard to remove",
-        "how sugar feeds acid-producing bacteria", "saliva: the mouth's natural defence system",
-        "probiotics and oral health: what research says so far", "why mouthwash is not a substitute for brushing",
+    "holidays and fasting": [
+        "holiday sweets and drinks at Genna, Timket, Meskel and Eid: protecting teeth",
+        "fasting seasons (Tsom) and Ramadan: keeping teeth and breath healthy",
+        "wedding and holiday feasts: snacking all day and the acid attack on teeth",
+        "breaking the fast: what to eat and drink first for your teeth",
     ],
-    "how teeth work": [
-        "enamel: the hardest substance in the body and why it cannot regrow",
-        "demineralisation and remineralisation: the daily battle on your teeth",
-        "dentin and why exposed roots become sensitive", "how a cavity develops step by step",
-        "how fluoride works at the chemical level", "wisdom teeth: why many people have problems with them",
+    "fluoride and water in Ethiopia": [
+        "dental fluorosis in the Rift Valley: brown spots from high-fluoride water",
+        "why fluoride toothpaste still matters, and why not to swallow it",
+        "choosing a toothpaste in Ethiopian shops: check for fluoride",
+        "safe drinking water and the teeth of growing children in high-fluoride areas",
+    ],
+    "traditional practices": [
+        "mefakia (chewing stick): how to use it well and its limits",
+        "cutting out a baby's tooth buds (so-called 'false teeth') is harmful: why to avoid it",
+        "home remedies on a painful tooth: why they can make things worse",
+        "charcoal and ash for cleaning teeth: why they damage enamel",
+        "salt and water rinses: what they can and cannot do",
+    ],
+    "khat, tobacco and shisha": [
+        "khat chewing: staining, dry mouth and gum damage",
+        "khat and sweet drinks together: double damage to teeth",
+        "cigarettes and shisha: stains, bad breath and gum disease",
+        "chewing tobacco and white patches in the mouth",
+        "quitting khat or tobacco: how the mouth recovers",
+    ],
+    "brushing and cleaning well": [
+        "correct brushing technique: small circles along the gumline",
+        "why two minutes of brushing matters",
+        "brushing at night before sleep: the most important brush of the day",
+        "cleaning between teeth without floss: what works",
+        "cleaning the tongue for fresher breath",
+        "choosing and caring for a toothbrush, and when to replace it",
     ],
     "gum health": [
-        "gingivitis vs periodontitis: the difference", "receding gums: causes and prevention",
-        "bone loss around teeth: the silent process", "why bleeding gums are never normal",
-        "smoking hides the signs of gum disease",
+        "bleeding gums are not normal: what they mean",
+        "gingivitis vs periodontitis: from swollen gums to loose teeth",
+        "receding gums and long-looking teeth",
+        "loose teeth in adults: causes and when to see a dentist",
+        "tartar (hard deposits) and why only a dentist can remove it",
     ],
-    "nutrition science": [
-        "acid erosion from soft drinks, juices and sports drinks", "calcium, vitamin D and strong teeth",
-        "hidden sugars in everyday foods", "snacking frequency and the acid clock in your mouth",
-        "vitamin C and gum health", "Ethiopian foods and drinks and their effects on teeth",
+    "tooth decay and pain": [
+        "how a cavity develops step by step",
+        "early signs of tooth decay you can see",
+        "toothache: why waiting makes treatment harder and costlier",
+        "swelling of the face or gums from a tooth: an emergency",
+        "sensitive teeth to cold or hot drinks",
     ],
-    "lifestyle risks": [
-        "khat chewing: effects on gums, teeth and the mouth", "tobacco and oral cancer risk",
-        "alcohol and oral health", "stress, teeth grinding and jaw pain", "sleep, snoring and dry mouth",
-        "energy drinks and tooth erosion",
+    "seeing a dentist in Ethiopia": [
+        "why a check-up before pain saves money",
+        "what happens at a dental check-up and cleaning",
+        "filling vs pulling a tooth: why saving the tooth is better",
+        "root canal treatment: myths vs reality",
+        "after a tooth extraction: caring for the wound",
+        "replacing missing teeth: dentures, bridges and implants explained",
     ],
-    "oral cancer and serious signs": [
-        "oral cancer: early warning signs adults should know", "HPV and throat and mouth cancers",
-        "white and red patches in the mouth", "why a mouth ulcer lasting over two weeks needs checking",
+    "family and life stages": [
+        "first teeth: start cleaning from the first tooth",
+        "baby bottles and sweet drinks at night",
+        "school children, sweets from shops and tooth decay",
+        "pregnancy and bleeding gums",
+        "teeth and gums after age 50",
+        "caring for dentures",
     ],
-    "modern dental treatments": [
-        "dental implants: how they fuse with bone", "root canal treatment: myths vs reality",
-        "how modern fillings are made", "crowns and bridges explained", "teeth whitening: safe vs harmful methods",
-        "digital X-rays and 3D scans in dentistry", "lasers in modern dentistry",
+    "breath and mouth care": [
+        "bad breath: real causes and real solutions",
+        "dry mouth and why saliva protects teeth",
+        "mouth sores that do not heal in two weeks",
+        "teeth grinding and jaw pain from stress",
     ],
-    "dental research and future": [
-        "research on regrowing tooth enamel", "stem cells from teeth in medical research",
-        "vaccines against tooth decay: where research stands", "artificial intelligence in dental diagnosis",
-        "saliva tests that may detect diseases", "3D printing in dentistry",
+    "injuries and emergencies": [
+        "a knocked-out tooth: what to do in the first hour",
+        "broken or chipped teeth from falls and sports",
+        "using teeth to open bottles and crack hard things",
     ],
-    "jaw, bite and alignment": [
-        "jaw joint (TMJ) problems explained", "crooked teeth and bite problems in adults",
-        "braces and clear aligners: how teeth move through bone", "mouth breathing and its effects",
-    ],
-    "life stages": [
-        "oral health changes after age 50", "menopause and oral health", "tooth loss and nutrition in older adults",
-        "teenagers: sugary drinks, sports and oral health", "why baby teeth matter for adult teeth",
-    ],
-    "myths and facts": [
-        "myth: brushing harder cleans better", "myth: no pain means no dental problem",
-        "myth: tooth loss is a normal part of ageing", "myth: sugar-free means safe for teeth",
-        "charcoal toothpaste: what the evidence says", "traditional chewing sticks (mefakia): evidence and limits",
-    ],
-    "oral hygiene science": [
-        "why two minutes of brushing matters", "electric vs manual toothbrushes: what studies show",
-        "cleaning between teeth: floss, brushes and what works best", "the tongue and bad breath bacteria",
-        "how often to replace a toothbrush and why",
+    "new dental research": [
+        "new research on repairing early tooth decay without drilling",
+        "research on the bacteria that cause tooth decay",
+        "new materials for fillings and how long they last",
+        "research on how sugar frequency affects decay",
     ],
 }
 TOPICS = [(area, t) for area, topics in TOPIC_AREAS.items() for t in topics]
@@ -164,15 +191,20 @@ def get_redis():
 
 # ---------------- Claude ----------------
 WRITER_SYSTEM = """You write dental health posts for a public Telegram community run by a dentist in Ethiopia.
-Readers are mostly adults who want real understanding, not only simple tips. Each post is in English, Afaan Oromoo and Amharic.
+Readers are ordinary people in Ethiopia, mostly adults. Each post is in English, Afaan Oromoo and Amharic.
 
-Style:
-- Give high-level understanding: explain what happens in the mouth or body and why, in plain words,
-  then what it means for the reader. Teach something most people do not already know.
-- For research news: say what researchers found or are studying, why it matters, and that it is research
-  (not yet everyday treatment) where that is true.
-- Do not repeat basic "brush twice a day" advice unless the topic is exactly that. Do not aim posts at children
-  unless the topic is about children.
+Content:
+- DENTAL ONLY: teeth, gums, tongue, mouth and dental care. Do not write about the heart, brain, diabetes, general
+  diseases or general health; if a source is mainly about those, set "skip" to true.
+- Ethiopian context: use local life where it fits naturally (buna and shai with sugar, sugarcane, kolo, injera and
+  teff, khat, mefakia, holidays and fasting seasons, high-fluoride water in the Rift Valley, limited access to
+  dentists and the cost of treatment). Advice must be practical and affordable for people in Ethiopia.
+- Every post is a GOOD, PRACTICAL TIP: briefly explain why it matters (what happens to the teeth or gums),
+  then say clearly what to do. End with when to see a dentist only where it fits.
+- For research news: say in plain words what was found, what it means for the reader's teeth, and that it is
+  still research where that is true.
+- Fluoride protects teeth mainly from toothpaste on the tooth surface; never suggest swallowing fluoride.
+- Do not aim posts at children unless the topic is about children.
 - Each language version: 4 to 6 sentences, about 500 to 700 characters, clear and warm. One emoji at the start is fine.
 
 Safety rules (very important, posts are published without human review):
@@ -187,8 +219,8 @@ Language rules:
 - "am": natural everyday Amharic in Ge'ez (Fidel) script.
 - All three versions must say the same thing.
 
-If the source cannot be turned into a useful post for ordinary adults
-(e.g. business news, company stocks, lawsuits, product ads, local clinic announcements), set "skip" to true.
+If the source cannot be turned into a useful dental post for people in Ethiopia (e.g. not mainly about teeth
+or gums, business news, company stocks, lawsuits, product ads, clinic announcements abroad), set "skip" to true.
 
 Reply with ONLY a JSON object, no other text:
 {"skip": false, "en": "...", "om": "...", "am": "..."}"""
@@ -197,7 +229,9 @@ CHECKER_SYSTEM = """You are a strict dental-health and language reviewer. A tip 
 to a public group in English, Afaan Oromoo (Qubee script) and Amharic (Ge'ez script) with no human review.
 
 Reject (ok=false) if ANY of these is true:
-- Medically wrong, misleading or potentially harmful advice
+- Not mainly about teeth, gums or the mouth (e.g. mostly about the heart, brain or general health)
+- Not a clear, practical tip or useful explanation for ordinary people in Ethiopia
+- Medically wrong, misleading or potentially harmful advice (e.g. suggesting to swallow fluoride)
 - Mentions medicine names, antibiotics, painkillers, or doses
 - Diagnoses, or suggests home treatment for pain/swelling/bleeding/infection instead of seeing a dentist
 - Invented statistics or claims
@@ -368,7 +402,7 @@ def tip_from_news(r, posts, start, log):
             break
         r.sadd("seen_news", item["link"])
         try:
-            tip = write_tip("Recent dental research or news. Explain it for ordinary adults.\n\n"
+            tip = write_tip("Recent dental research or news. Turn it into a practical dental post for people in Ethiopia.\n\n"
                             f"Headline: {item['title']}\n\nSummary: {item['summary'][:2000]}")
             if tip and accept(tip, posts, log):
                 tip["source"], tip["area"] = item["link"], "research news"
